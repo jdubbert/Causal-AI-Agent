@@ -1,5 +1,9 @@
 # 🧪 Causal Inference Agent
 
+The goal of this project is to help document and guide me down the AI agent rabbit hole, using methods/ideas that I already know. This will continue to be a huge WIP with many iterations as I learn more and more of the cool things you can do.
+
+TLDR: this is pretty basic right now, but we have to start somewhere!
+
 An AI-powered agent that **automatically selects, runs, and interprets causal inference methods** on your data. Give it a CSV and a business question — it profiles your data, picks the right method, validates assumptions with diagnostic checks, and generates a full markdown report.
 
 Built with [Claude](https://docs.anthropic.com/en/docs/intro-to-claude) as the reasoning backbone and pure Python statistical implementations.
