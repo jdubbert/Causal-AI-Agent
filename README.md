@@ -55,7 +55,7 @@ The agent automatically falls back — for example, if DiD parallel trends fail,
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/<your-username>/causal-inference-agent.git
+git clone https://github.com/jdubbert/causal-inference-agent.git
 cd causal-inference-agent
 pip install -r requirements.txt
 ```
