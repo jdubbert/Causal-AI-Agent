@@ -97,6 +97,20 @@ def generate_report(state: AgentState) -> str:
 
     lines.append(f"## Business Question\n> {state.question}\n")
 
+    # Analysis plan
+    if state.analysis_plan:
+        plan = state.analysis_plan
+        lines.append("## Analysis Plan\n")
+        lines.append(f"**Goal**: {plan.goal}\n")
+        lines.append(f"**Data Summary**: {plan.data_summary}\n")
+        lines.append(f"**Planned Methods**: {' → '.join(plan.planned_methods)}\n")
+        lines.append(f"**Rationale**: {plan.rationale}\n")
+        lines.append(f"**Fallback Strategy**: {plan.fallback_strategy}\n")
+        lines.append("**Execution Steps**:\n")
+        for i, step in enumerate(plan.steps, 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+
     # Data profile summary
     if state.data_profile:
         p = state.data_profile

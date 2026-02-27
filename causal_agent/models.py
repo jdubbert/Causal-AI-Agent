@@ -51,10 +51,31 @@ class DataProfile(BaseModel):
     notes: list[str] = []
 
 
+class AnalysisPlan(BaseModel):
+    """Structured analysis plan created by the agent after profiling the data."""
+    goal: str  # What the user wants to know (restated clearly)
+    data_summary: str  # Key facts about the data
+    planned_methods: list[str]  # Methods to try, in order
+    rationale: str  # Why these methods were chosen
+    fallback_strategy: str  # What to do if primary method fails diagnostics
+    steps: list[str]  # Ordered list of concrete steps
+
+
+class AgentPhase(str, Enum):
+    GOAL = "goal"
+    PLAN = "plan"
+    ACTION = "action"
+    OUTCOME = "outcome"
+
+
 class AgentState(BaseModel):
     # Inputs
     question: str
     data_path: str
+
+    # Goal → Plan → Action → Outcome tracking
+    phase: AgentPhase = AgentPhase.GOAL
+    analysis_plan: Optional[AnalysisPlan] = None
 
     # Progressive state
     data_profile: Optional[DataProfile] = None

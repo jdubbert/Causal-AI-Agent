@@ -2,7 +2,7 @@ import json
 from typing import TypedDict, Annotated, Optional
 import anthropic
 
-from .models import AgentState, CausalMethod, DataProfile, MethodResult
+from .models import AgentState, AgentPhase, AnalysisPlan, CausalMethod, DataProfile, MethodResult
 from .tools.profiler import profile_dataset
 from .tools.ab_test import run_ab_test
 from .tools.did import run_did
@@ -18,7 +18,7 @@ TOOLS = [
         "description": (
             "Load and profile the dataset. Returns column names, data shape, detected "
             "treatment/outcome/time columns, and suggested causal methods. "
-            "Always call this first."
+            "Always call this first — this is part of the GOAL phase."
         ),
         "input_schema": {
             "type": "object",
@@ -29,11 +29,53 @@ TOOLS = [
         }
     },
     {
+        "name": "create_analysis_plan",
+        "description": (
+            "Create a structured analysis plan BEFORE running any analysis. "
+            "This is REQUIRED after profiling the dataset and before calling any "
+            "run_* tool. Formalize the goal, planned methods, rationale, "
+            "fallback strategy, and concrete steps."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "Clear restatement of what the user wants to learn, in causal terms"
+                },
+                "data_summary": {
+                    "type": "string",
+                    "description": "Key facts about the data (rows, columns, structure, treatment/outcome)"
+                },
+                "planned_methods": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Methods to try, in priority order (e.g. ['DiD', 'Synthetic Control'])"
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why these methods fit this data and question"
+                },
+                "fallback_strategy": {
+                    "type": "string",
+                    "description": "What to do if the primary method's diagnostics fail"
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered list of concrete steps the agent will take"
+                }
+            },
+            "required": ["goal", "data_summary", "planned_methods", "rationale", "fallback_strategy", "steps"]
+        }
+    },
+    {
         "name": "run_ab_test",
         "description": (
             "Run a two-sample A/B test with Welch's t-test. Includes SRM check, "
             "Cohen's d effect size, and normality check for small samples. "
-            "Use when data has a treatment/control assignment and no time dimension needed."
+            "Use when data has a treatment/control assignment and no time dimension needed. "
+            "Only call this during the ACTION phase, after creating a plan."
         ),
         "input_schema": {
             "type": "object",
@@ -49,7 +91,8 @@ TOOLS = [
         "description": (
             "Run a Difference-in-Differences analysis using two-way fixed effects OLS. "
             "Includes parallel trends test, placebo test, and pre-period balance check. "
-            "Use when data has treatment/control groups AND time periods."
+            "Use when data has treatment/control groups AND time periods. "
+            "Only call this during the ACTION phase, after creating a plan."
         ),
         "input_schema": {
             "type": "object",
@@ -65,10 +108,11 @@ TOOLS = [
         "description": (
             "Run the Abadie-Diamond-Hainmueller Synthetic Control method. "
             "Finds optimal donor unit weights to construct a counterfactual. "
-            "Diagnostics include RMSPE pre-period fit, post/pre RMSPE ratio, "
+            "Diagnostics include RMSPE pre-period fit, Fisher permutation p-value, "
             "and leave-one-out donor sensitivity. "
             "Use when DiD parallel trends fails, or when there are geographic units "
-            "with rich pre-period data."
+            "with rich pre-period data. "
+            "Only call this during the ACTION phase, after creating a plan."
         ),
         "input_schema": {
             "type": "object",
@@ -83,7 +127,8 @@ TOOLS = [
         "name": "generate_report",
         "description": (
             "Generate the final markdown report summarizing the analysis, "
-            "findings, diagnostics, and recommendations. Call this as the last step."
+            "findings, diagnostics, and recommendations. Call this as the LAST step "
+            "during the OUTCOME phase."
         ),
         "input_schema": {
             "type": "object",
@@ -96,28 +141,49 @@ TOOLS = [
 ]
 
 
-SYSTEM_PROMPT = """You are an expert causal inference analyst. Your job is to:
-1. Profile a dataset to understand its structure
-2. Select the most appropriate causal inference method
-3. Run the analysis and inspect the diagnostics
-4. If diagnostics fail, adapt — try a fallback method or flag the issue
-5. Generate a structured report
+SYSTEM_PROMPT = """You are an expert causal inference analyst. You follow a structured
+Goal → Plan → Action → Outcome workflow for every analysis.
+
+## Workflow (FOLLOW THIS EXACTLY)
+
+### Phase 1: GOAL
+- Call `profile_dataset` to understand the data structure.
+- Restate the user's business question as a clear causal question.
+
+### Phase 2: PLAN
+- Call `create_analysis_plan` with:
+  - A clear goal (what causal effect are we estimating?)
+  - A data summary (what do we have to work with?)
+  - Planned methods in priority order
+  - Rationale for why those methods fit
+  - A fallback strategy if diagnostics fail
+  - Concrete ordered steps
+- Do NOT call any run_* tool before creating a plan.
+
+### Phase 3: ACTION
+- Execute the plan step by step.
+- Run the primary method. Inspect diagnostics.
+- If diagnostics fail, follow your fallback strategy (e.g., switch to Synthetic Control).
+- Briefly explain what you observe after each step.
+
+### Phase 4: OUTCOME
+- Synthesize findings across all methods tried.
+- Call `generate_report` to produce the final deliverable.
 
 ## Method Selection Logic
-- **A/B Test**: Cross-sectional data with treatment/control assignment. No time dimension needed.
+- **A/B Test**: Cross-sectional data with treatment/control. No time dimension needed.
 - **DiD**: Panel data with treatment/control groups and time periods. Requires parallel trends.
-- **Synthetic Control**: Geographic or unit-level panel data. Fallback when DiD parallel trends fail. Best with many pre-periods and donor units.
+- **Synthetic Control**: Geographic/unit-level panel data. Fallback when DiD fails. Best with many pre-periods.
 
 ## Diagnostic Response Logic
-- If A/B test SRM fails → flag it prominently but still report the estimate
-- If DiD parallel trends fails → try Synthetic Control as a fallback
-- If DiD placebo fails → flag credibility concern and report both estimates  
-- If Synthetic Control pre-period fit is poor (>10% RMSPE) → flag it and note unreliability
+- A/B test SRM fails → flag prominently, still report estimate
+- DiD parallel trends fails → execute fallback to Synthetic Control
+- DiD placebo fails → flag credibility concern, try alternative
+- SC pre-period fit >10% RMSPE → flag unreliability
 
-## Your Response Style
-Be concise in your reasoning. When you select a method, briefly explain why.
-When diagnostics fail, explain what it means for result credibility.
-Always call generate_report as your final step.
+## Response Style
+Be concise. Explain your reasoning at each phase transition.
+Always follow Goal → Plan → Action → Outcome. Never skip the Plan.
 """
 
 
@@ -127,7 +193,21 @@ def _dispatch_tool(tool_name: str, tool_input: dict, state: AgentState) -> tuple
         if tool_name == "profile_dataset":
             profile = profile_dataset(tool_input["data_path"])
             state.data_profile = profile
+            state.phase = AgentPhase.PLAN  # Move to Plan phase
             return profile.model_dump_json(indent=2), state
+
+        elif tool_name == "create_analysis_plan":
+            plan = AnalysisPlan(
+                goal=tool_input["goal"],
+                data_summary=tool_input["data_summary"],
+                planned_methods=tool_input["planned_methods"],
+                rationale=tool_input["rationale"],
+                fallback_strategy=tool_input["fallback_strategy"],
+                steps=tool_input["steps"],
+            )
+            state.analysis_plan = plan
+            state.phase = AgentPhase.ACTION  # Move to Action phase
+            return plan.model_dump_json(indent=2), state
 
         elif tool_name == "run_ab_test":
             profile = DataProfile.model_validate_json(tool_input["profile_json"])
@@ -163,6 +243,7 @@ def _dispatch_tool(tool_name: str, tool_input: dict, state: AgentState) -> tuple
             return result.model_dump_json(indent=2), state
 
         elif tool_name == "generate_report":
+            state.phase = AgentPhase.OUTCOME
             report = generate_report(state)
             state.report = report
             return "Report generated successfully.", state
@@ -176,9 +257,29 @@ def _dispatch_tool(tool_name: str, tool_input: dict, state: AgentState) -> tuple
         return f"ERROR: {error_msg}", state
 
 
+# Phase display helpers
+_PHASE_LABELS = {
+    AgentPhase.GOAL: ("🎯", "GOAL",    "Understanding the question & data"),
+    AgentPhase.PLAN: ("📋", "PLAN",    "Creating analysis plan"),
+    AgentPhase.ACTION: ("⚡", "ACTION",  "Executing analysis"),
+    AgentPhase.OUTCOME: ("📊", "OUTCOME", "Synthesizing results"),
+}
+
+
+def _print_phase_transition(new_phase: str, verbose: bool):
+    """Print a visual phase banner when the agent transitions."""
+    if not verbose:
+        return
+    emoji, label, desc = _PHASE_LABELS.get(new_phase, ("❓", "UNKNOWN", ""))
+    print(f"\n{'─'*60}")
+    print(f"{emoji}  Phase: {label} — {desc}")
+    print(f"{'─'*60}\n")
+
+
 def run_agent(question: str, data_path: str, verbose: bool = True) -> AgentState:
     """
-    Main agent loop. Runs until the LLM calls generate_report or hits max iterations.
+    Main agent loop following Goal → Plan → Action → Outcome.
+    Runs until the LLM calls generate_report or hits max iterations.
     """
     client = anthropic.Anthropic()
     state = AgentState(question=question, data_path=data_path)
@@ -189,19 +290,26 @@ def run_agent(question: str, data_path: str, verbose: bool = True) -> AgentState
             "content": (
                 f"Business question: {question}\n"
                 f"Data file: {data_path}\n\n"
-                "Please analyze this data and answer the business question using the most "
-                "appropriate causal inference method. Profile the data first, then select "
-                "and run the right method, check diagnostics, and generate a report."
+                "Follow the Goal → Plan → Action → Outcome workflow:\n"
+                "1. GOAL: Profile the data and restate the question as a causal inference problem\n"
+                "2. PLAN: Create a structured analysis plan (call create_analysis_plan)\n"
+                "3. ACTION: Execute the plan — run the primary method, check diagnostics, run fallbacks if needed\n"
+                "4. OUTCOME: Synthesize findings and generate the final report"
             )
         }
     ]
 
     if verbose:
         print(f"\n{'='*60}")
-        print(f"🤖 Causal Inference Agent Starting")
+        print(f"🤖 Causal Inference Agent")
+        print(f"   Goal → Plan → Action → Outcome")
+        print(f"{'='*60}")
         print(f"📋 Question: {question}")
         print(f"📁 Data: {data_path}")
-        print(f"{'='*60}\n")
+        print(f"{'='*60}")
+        _print_phase_transition(AgentPhase.GOAL, verbose)
+
+    last_phase = state.phase
 
     for iteration in range(state.max_iterations * 3):  # generous bound
         state.iteration = iteration
@@ -244,12 +352,29 @@ def run_agent(question: str, data_path: str, verbose: bool = True) -> AgentState
         for tool_call in tool_calls:
             if verbose:
                 print(f"🔧 Calling tool: {tool_call.name}")
-                if tool_call.name != "generate_report":
+                if tool_call.name not in ("generate_report", "create_analysis_plan"):
                     print(f"   Input: {json.dumps(tool_call.input, indent=2)[:200]}...")
 
             result_text, state = _dispatch_tool(tool_call.name, tool_call.input, state)
 
-            if verbose and tool_call.name != "generate_report":
+            # Print phase transition if phase changed
+            if state.phase != last_phase:
+                _print_phase_transition(state.phase, verbose)
+                last_phase = state.phase
+
+            # Print plan summary when plan is created
+            if verbose and tool_call.name == "create_analysis_plan" and state.analysis_plan:
+                plan = state.analysis_plan
+                print(f"   🎯 Goal: {plan.goal}")
+                print(f"   📊 Data: {plan.data_summary[:120]}..." if len(plan.data_summary) > 120 else f"   📊 Data: {plan.data_summary}")
+                print(f"   🔬 Methods: {' → '.join(plan.planned_methods)}")
+                print(f"   🔄 Fallback: {plan.fallback_strategy[:100]}")
+                print(f"   📝 Steps:")
+                for i, step in enumerate(plan.steps, 1):
+                    print(f"      {i}. {step}")
+                print()
+
+            if verbose and tool_call.name not in ("generate_report", "create_analysis_plan"):
                 preview = result_text[:300] + "..." if len(result_text) > 300 else result_text
                 print(f"   Result preview: {preview}\n")
 
@@ -262,7 +387,7 @@ def run_agent(question: str, data_path: str, verbose: bool = True) -> AgentState
             # Stop after report generation
             if tool_call.name == "generate_report":
                 if verbose:
-                    print("📊 Report generated. Agent complete.\n")
+                    print("\n✅ Agent complete — Goal → Plan → Action → Outcome workflow finished.\n")
                 return state
 
         messages.append({"role": "user", "content": tool_results})
@@ -310,6 +435,14 @@ def _build_chat_context(state: AgentState) -> str:
             parts.append(f"Time col: {p.time_col}")
         if p.notes:
             parts.append(f"Notes: {'; '.join(p.notes)}")
+
+    if state.analysis_plan:
+        plan = state.analysis_plan
+        parts.append(f"\nAnalysis Plan:")
+        parts.append(f"Goal: {plan.goal}")
+        parts.append(f"Methods: {' → '.join(plan.planned_methods)}")
+        parts.append(f"Rationale: {plan.rationale}")
+        parts.append(f"Fallback: {plan.fallback_strategy}")
 
     if state.method_result:
         r = state.method_result

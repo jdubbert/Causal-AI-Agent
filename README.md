@@ -4,7 +4,7 @@ The goal of this project is to help document and guide me down the AI agent rabb
 
 TLDR: this is pretty basic right now, but we have to start somewhere!
 
-An AI-powered agent that **automatically selects, runs, and interprets causal inference methods** on your data. Give it a CSV and a business question — it profiles your data, picks the right method, validates assumptions with diagnostic checks, and generates a full markdown report.
+Ultimate Goal: An AI-powered agent that **automatically selects, runs, and interprets causal inference methods** on your data. Give it a CSV and a business question — it profiles your data, picks the right method, validates assumptions with diagnostic checks, and generates a full markdown report.
 
 Built with [Claude](https://docs.anthropic.com/en/docs/intro-to-claude) as the reasoning backbone and pure Python statistical implementations.
 
@@ -12,34 +12,40 @@ Built with [Claude](https://docs.anthropic.com/en/docs/intro-to-claude) as the r
 
 ## How It Works
 
+The agent follows a structured **Goal → Plan → Action → Outcome** workflow:
+
 ```
 CSV + Business Question
         │
         ▼
-  ┌─────────────┐
-  │  Data        │  Detects columns: treatment, outcome,
-  │  Profiler    │  time, geo — suggests methods
-  └──────┬──────┘
-         │
-         ▼
-  ┌─────────────┐
-  │  Claude      │  Picks the best method based on
-  │  (Reasoning) │  data structure & question
-  └──────┬──────┘
-         │
-         ▼
-  ┌─────────────┐
-  │  Analysis    │  Runs the chosen method with
-  │  Engine      │  full diagnostic checks
-  └──────┬──────┘
-         │
-    ┌────┴────┐  Diagnostics fail?
-    │         │  → Falls back to alternative method
-    ▼         ▼
-  ┌─────────────┐
-  │  Report     │  Structured markdown with estimates,
-  │  Generator  │  confidence intervals, & recommendations
-  └─────────────┘
+  ┌─────────────────────────────────────────────────────┐
+  │  🎯 GOAL                                            │
+  │  Profile the data — detect columns, structure,      │
+  │  treatment/outcome, and restate the causal question  │
+  └──────────────────────┬──────────────────────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  📋 PLAN                                            │
+  │  Create analysis plan — pick methods, justify the   │
+  │  choice, define fallback strategy & concrete steps   │
+  └──────────────────────┬──────────────────────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  ⚡ ACTION                                           │
+  │  Execute the plan — run primary method, check       │
+  │  diagnostics, fall back if assumptions fail          │
+  └──────────────────────┬──────────────────────────────┘
+                         │
+                    ┌────┴────┐  Diagnostics fail?
+                    │         │  → Follows fallback strategy
+                    ▼         ▼
+  ┌─────────────────────────────────────────────────────┐
+  │  📊 OUTCOME                                         │
+  │  Synthesize findings, generate structured report    │
+  │  with estimates, CIs, diagnostics & recommendations  │
+  └─────────────────────────────────────────────────────┘
 ```
 
 ## Supported Methods
@@ -47,8 +53,8 @@ CSV + Business Question
 | Method | When It's Used | Key Diagnostics |
 |--------|---------------|-----------------|
 | **A/B Test** (Welch's t-test) | Cross-sectional treatment/control data | Sample Ratio Mismatch, Cohen's d, Normality check |
-| **Difference-in-Differences** | Panel data with treatment groups + time periods | Parallel trends test, Placebo test, Pre-period balance |
-| **Synthetic Control** | Geo/unit-level panel data; fallback when DiD fails | Pre-period fit (RMSPE), Post/Pre RMSPE ratio, Leave-one-out sensitivity |
+| **Difference-in-Differences** (TWFE) | Panel data with treatment groups + time periods | Event-study parallel trends (F-test), Placebo test, Pre-period balance, Anticipation effects |
+| **Synthetic Control** (ADH) | Geo/unit-level panel data; fallback when DiD fails | Pre-period fit (RMSPE), Fisher permutation p-value, Time placebo, Post/Pre RMSPE ratio, Leave-one-out sensitivity |
 
 The agent automatically falls back — for example, if DiD parallel trends fail, it tries Synthetic Control and reports both.
 
@@ -228,14 +234,14 @@ Full sample reports are in the repo: `sample_report_ab_test.md`, `sample_report_
 ├── requirements.txt
 ├── causal_agent/
 │   ├── __init__.py
-│   ├── models.py                 # Pydantic models (AgentState, DataProfile, MethodResult)
-│   ├── runner.py                 # Agent loop — Claude tool-use orchestration
+│   ├── models.py                 # Pydantic models (AgentState, AnalysisPlan, AgentPhase, ...)
+│   ├── runner.py                 # Goal→Plan→Action→Outcome agent loop
 │   └── tools/
 │       ├── __init__.py
 │       ├── profiler.py           # Auto-detects columns & suggests methods
 │       ├── ab_test.py            # Welch's t-test + SRM + Cohen's d
-│       ├── did.py                # Two-way FE DiD + parallel trends + placebo
-│       ├── synthetic_control.py  # Abadie-Diamond-Hainmueller SC method
+│       ├── did.py                # TWFE DiD + event-study + placebo + anticipation
+│       ├── synthetic_control.py  # ADH SC + Fisher permutation + time placebo + LOO
 │       └── reporter.py           # Markdown report generator
 └── sample_report_*.md            # Example output reports
 ```
@@ -258,15 +264,35 @@ Your CSV should include some combination of these columns (the profiler auto-det
 
 ## How the Agent Reasons
 
-The agent uses Claude's tool-use capability to run an iterative analysis loop:
+The agent uses Claude's tool-use capability to follow a structured **Goal → Plan → Action → Outcome** loop:
 
-1. **Profile** → auto-detect data structure
-2. **Select method** → Claude picks the best fit based on structure + question
-3. **Run analysis** → execute the statistical method
-4. **Check diagnostics** → if assumptions fail, adapt (e.g., DiD → Synthetic Control)
-5. **Generate report** → structured markdown with estimates, diagnostics, and interpretation
+1. **🎯 Goal** — Profile the data, detect its structure, and restate the business question as a causal inference problem
+2. **📋 Plan** — Create a formal analysis plan: which methods to try, why they fit, what to do if diagnostics fail, and the concrete steps to execute
+3. **⚡ Action** — Execute the plan step-by-step: run the primary method, inspect diagnostics, and follow the fallback strategy if assumptions are violated
+4. **📊 Outcome** — Synthesize findings across all methods tried and generate a structured markdown report
 
-All reasoning steps are logged and included in the final report.
+The plan and all reasoning steps are logged and included in the final report, so you can see exactly *why* the agent made each decision.
+
+```
+🎯  Phase: GOAL — Understanding the question & data
+🔧 Calling tool: profile_dataset
+
+📋  Phase: PLAN — Creating analysis plan
+   🎯 Goal: Estimate the causal effect of the marketing campaign on revenue
+   🔬 Methods: DiD → Synthetic Control
+   🔄 Fallback: If parallel trends fail, switch to SC
+   📝 Steps:
+      1. Run DiD with TWFE and cluster-robust SEs
+      2. Check parallel trends via event-study F-test
+      3. If parallel trends fail, run Synthetic Control
+      4. Generate final report with all findings
+
+⚡  Phase: ACTION — Executing analysis
+🔧 Calling tool: run_did
+
+📊  Phase: OUTCOME — Synthesizing results
+✅ Agent complete — Goal → Plan → Action → Outcome workflow finished.
+```
 
 ---
 
@@ -276,8 +302,3 @@ All reasoning steps are logged and included in the final report.
 - An [Anthropic API key](https://console.anthropic.com/)
 - Dependencies: see `requirements.txt`
 
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE).
