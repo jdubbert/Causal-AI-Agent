@@ -4,12 +4,15 @@ from typing import Optional
 from ..models import DataProfile, CausalMethod
 
 
-COMMON_TIME_COLS = ["date", "week", "month", "period", "time", "year", "quarter"]
-COMMON_GROUP_COLS = ["group", "variant", "treatment", "arm", "cell", "segment", "assigned"]
+COMMON_TIME_COLS = ["date", "week", "wk", "month", "period", "time", "year", "quarter", "day", "dt"]
+COMMON_GROUP_COLS = ["group", "grp", "variant", "treatment", "arm", "cell", "segment", "assigned",
+                    "condition", "cohort", "bucket","cell",'test_cell']
 COMMON_GEO_COLS = ["geo", "dma", "state", "region", "market", "zip", "city"]
-COMMON_TREATMENT_COLS = ["treated", "treatment", "is_treatment", "exposed", "is_exposed"]
+COMMON_TREATMENT_COLS = ["treated", "treatment", "is_treatment", "exposed", "is_exposed",
+                         "grp", "group", "variant", "condition"]
 COMMON_OUTCOME_COLS = ["revenue", "conversions", "clicks", "opens", "response", "outcome",
-                       "activated", "enrolled", "metric", "kpi", "value", "sales"]
+                       "activated", "enrolled", "metric", "kpi", "value", "val", "sales",
+                       "amount", "score", "rate", "result"]
 
 
 def _find_col(df_cols: list[str], candidates: list[str]) -> Optional[str]:
@@ -45,6 +48,19 @@ def profile_dataset(data_path: str) -> DataProfile:
 
     notes = []
     suggested_methods = []
+
+    # Value-based detection: if no treatment col found, look for columns with
+    # test/control, treatment/control, A/B, 0/1 values
+    if treatment_col is None:
+        treatment_values = {"test", "control", "treatment", "treated", "exposed",
+                           "unexposed", "placebo", "a", "b", "0", "1"}
+        for col in cols:
+            unique_vals = set(str(v).lower().strip() for v in df[col].dropna().unique())
+            if len(unique_vals) == 2 and unique_vals.issubset(treatment_values):
+                treatment_col = col
+                group_col = group_col or col
+                notes.append(f"Detected '{col}' as treatment column based on values: {sorted(unique_vals)}")
+                break
 
     # Count treatment/control
     n_treatment = n_control = None

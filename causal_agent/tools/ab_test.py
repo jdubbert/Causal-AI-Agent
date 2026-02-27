@@ -94,7 +94,81 @@ def run_ab_test(data_path: str, profile: DataProfile) -> MethodResult:
         details={"pooled_std": round(pooled_std, 4)}
     ))
 
-    # ── Diagnostic 3: Normality check (for small samples) ───────────────────
+    # ── Diagnostic 3: Outlier & Variance Check ────────────────────────────────
+    # Detect extreme outliers via IQR method and flag variance asymmetry
+    # Skip outlier detection for binary outcomes (IQR=0 makes it meaningless)
+    all_vals = pd.concat([control, treatment])
+    is_binary = set(all_vals.dropna().unique()).issubset({0, 0.0, 1, 1.0})
+
+    def _count_outliers(series: pd.Series) -> tuple[int, float, float]:
+        q1, q3 = series.quantile(0.25), series.quantile(0.75)
+        iqr = q3 - q1
+        if iqr == 0:
+            return 0, float(q1), float(q3)  # can't define outliers when IQR=0
+        lower, upper = q1 - 3 * iqr, q3 + 3 * iqr  # 3× IQR = extreme outliers
+        n_outliers = int(((series < lower) | (series > upper)).sum())
+        return n_outliers, float(lower), float(upper)
+
+    if is_binary:
+        # Binary outcome — outlier detection not applicable
+        diagnostics.append(DiagnosticResult(
+            name="Outlier & Variance Check",
+            passed=True,
+            interpretation="Binary outcome detected — outlier check not applicable. Variance ratio is inherent to proportions.",
+            details={"is_binary": True}
+        ))
+    else:
+        outliers_c, lo_c, hi_c = _count_outliers(control)
+        outliers_t, lo_t, hi_t = _count_outliers(treatment)
+        total_outliers = outliers_c + outliers_t
+
+        var_ratio = (
+            max(treatment.var(ddof=1), control.var(ddof=1)) /
+            min(treatment.var(ddof=1), control.var(ddof=1))
+            if min(treatment.var(ddof=1), control.var(ddof=1)) > 0 else np.inf
+        )
+
+        outlier_ok = total_outliers <= 0.02 * (n1 + n2)  # ≤2% of data
+        variance_ok = var_ratio < 10  # variance ratio under 10×
+        check_passed = outlier_ok and variance_ok
+
+        outlier_parts = []
+        if not outlier_ok:
+            outlier_parts.append(
+                f"⚠️ {total_outliers} extreme outliers detected "
+                f"({outliers_c} control, {outliers_t} treatment) using 3×IQR rule. "
+                "These may heavily distort the t-test estimate. "
+                "Consider trimming outliers or using a robust test."
+            )
+        if not variance_ok:
+            outlier_parts.append(
+                f"⚠️ Extreme variance asymmetry — ratio = {var_ratio:.1f}× "
+                f"(control std={control.std():.2f}, treatment std={treatment.std():.2f}). "
+                "Welch's t-test handles unequal variances, but this level of "
+                "asymmetry suggests outlier-driven inflation in one group."
+            )
+        if check_passed:
+            outlier_parts.append(
+                f"No extreme outliers detected. Variance ratio = {var_ratio:.1f}× — acceptable."
+            )
+
+        diagnostics.append(DiagnosticResult(
+            name="Outlier & Variance Check",
+            passed=check_passed,
+            statistic=round(var_ratio, 2),
+            interpretation=" ".join(outlier_parts),
+            details={
+                "outliers_control": outliers_c,
+                "outliers_treatment": outliers_t,
+                "variance_ratio": round(var_ratio, 2),
+                "control_std": round(float(control.std()), 4),
+                "treatment_std": round(float(treatment.std()), 4),
+                "iqr_bounds_control": [round(lo_c, 2), round(hi_c, 2)],
+                "iqr_bounds_treatment": [round(lo_t, 2), round(hi_t, 2)],
+            }
+        ))
+
+    # ── Diagnostic 4: Normality check (for small samples) ───────────────────
     if n1 < 30 or n2 < 30:
         _, p_norm_c = stats.shapiro(control)
         _, p_norm_t = stats.shapiro(treatment)
